@@ -223,6 +223,18 @@ static irqreturn_t qcom_iommu_fault(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+static bool qcom_iommu_is_64bit(struct device *dev)
+{
+	struct property *prop;
+	const char *compat;
+
+	of_property_for_each_string(dev->of_node, "compatible", prop, compat)
+		if (strstr(compat, "qcom,adreno-5"))
+			return true;
+
+	return false;
+}
+
 static int qcom_iommu_init_domain(struct iommu_domain *domain,
 				  struct qcom_iommu_dev *qcom_iommu,
 				  struct device *dev)
@@ -231,6 +243,7 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct io_pgtable_ops *pgtbl_ops;
 	struct io_pgtable_cfg pgtbl_cfg;
+	bool is64bit = qcom_iommu_is_64bit(dev);
 	int i, ret = 0;
 	u32 reg;
 
@@ -243,7 +256,7 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 
 	pgtbl_cfg = (struct io_pgtable_cfg) {
 		.pgsize_bitmap	= qcom_iommu_ops.pgsize_bitmap,
-		.ias		= 32,
+		.ias		= is64bit ? 48 : 32,
 		.oas		= 40,
 		.tlb		= &qcom_flush_ops,
 		.iommu_dev	= qcom_iommu->dev,
@@ -252,7 +265,8 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 	qcom_domain->iommu = qcom_iommu;
 	qcom_domain->fwspec = fwspec;
 
-	pgtbl_ops = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &pgtbl_cfg, qcom_domain);
+	pgtbl_ops = alloc_io_pgtable_ops(is64bit ? ARM_64_LPAE_S1 : ARM_32_LPAE_S1,
+					 &pgtbl_cfg, qcom_domain);
 	if (!pgtbl_ops) {
 		dev_err(qcom_iommu->dev, "failed to allocate pagetable ops\n");
 		ret = -ENOMEM;
@@ -274,6 +288,14 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 				goto out_clear_iommu;
 			}
 			ctx->secure_init = true;
+		}
+
+		if (is64bit) {
+			ret = qcom_scm_iommu_set_pt_format(qcom_iommu->sec_id, ctx->asid, 1);
+			if (ret) {
+				dev_err(qcom_iommu->dev, "set pt format failed: %d\n", ret);
+				goto out_clear_iommu;
+			}
 		}
 
 		/* TTBRs */
