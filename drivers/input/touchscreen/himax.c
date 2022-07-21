@@ -149,20 +149,19 @@ static int himax_enable_regulators(struct himax_ts_data *ts)
 	if (error)
 		return error;
 
-	error = regulator_enable(ts->regulator_vcc_i2c);
+	error = regulator_enable(ts->regulator_vdd_ana);
 	if (error) {
 		regulator_disable(ts->regulator_vcc_i2c);
 		return error;
 	}
 
-	msleep(1000);
 	return 0;
 }
 
 static void himax_disable_regulators(struct himax_ts_data *ts)
 {
 	regulator_disable(ts->regulator_vcc_i2c);
-	regulator_disable(ts->regulator_vcc_i2c);
+	regulator_disable(ts->regulator_vdd_ana);
 }
 
 static void himax_disable_regulators_devm(void *data)
@@ -178,8 +177,6 @@ static int himax_setup_regulator(struct device *dev, const char *name,
 		return dev_err_probe(dev, PTR_ERR(*regulator),
 				     "Failed to initialize %s regulator", name);
 	}
-
-	dev_info(dev, "reg %s, %pe\n", name, *regulator);
 
 	return 0;
 }
@@ -377,13 +374,12 @@ static int himax_probe(struct i2c_client *client,
 	if (error)
 		return error;
 
-	dev_info(&client->dev, "pre i2c: %d, ana: %d\n",
-		 regulator_is_enabled(ts->regulator_vcc_i2c),
-		 regulator_is_enabled(ts->regulator_vcc_i2c));
-	himax_enable_regulators(ts);
-	dev_info(&client->dev, "post i2c: %d, ana: %d\n",
-		 regulator_is_enabled(ts->regulator_vcc_i2c),
-		 regulator_is_enabled(ts->regulator_vcc_i2c));
+	error = himax_enable_regulators(ts);
+	if (error) {
+		return dev_err_probe(&client->dev, error,
+				     "Failed to enable regulators\n");
+	}
+
 	devm_add_action_or_reset(&client->dev, himax_disable_regulators_devm,
 				 ts);
 
