@@ -74,6 +74,8 @@
 		reg = <0x48>;
 		interrupt-parent = <&tlmm>;
 		interrupts = <65 IRQ_TYPE_LEVEL_LOW>;
+		vcc-i2c-supply = <&pm8953_l6>;
+		vdd-ana-supply = <&pm8953_s3>;
 		touchscreen-size-x = <1080>;
 		touchscreen-size-y = <2160>;
 		reset-gpios = <&tlmm 64 GPIO_ACTIVE_LOW>;
