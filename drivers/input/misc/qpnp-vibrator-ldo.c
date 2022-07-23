@@ -15,6 +15,7 @@
 #include <linux/errno.h>
 #include <linux/hrtimer.h>
 #include <linux/init.h>
+#include <linux/input.h>
 #include <linux/kernel.h>
 #include <linux/leds.h>
 #include <linux/module.h>
@@ -431,6 +432,25 @@ static enum led_brightness qpnp_vib_brightness_get(struct led_classdev *cdev)
 	return 0;
 }
 
+static int qpnp_vib_play_effect(struct input_dev *dev, void *data,
+				struct ff_effect *effect)
+{
+	struct vib_ldo_chip *vib = input_get_drvdata(dev);
+	u16 speed;
+
+	speed = effect->u.rumble.strong_magnitude >> 8;
+	if (!speed)
+		speed = effect->u.rumble.weak_magnitude >> 9;
+
+	mutex_lock(&vib->lock);
+	hrtimer_cancel(&vib->stop_timer);
+	vib->state = !!speed;
+	mutex_unlock(&vib->lock);
+	schedule_work(&vib->vib_work);
+
+	return 0;
+}
+
 static void qpnp_vib_brightness_set(struct led_classdev *cdev,
 				    enum led_brightness level)
 {
@@ -478,12 +498,35 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	chip->input_dev = devm_input_allocate_device(&pdev->dev);
+	if (!chip->input_dev)
+		return -ENOMEM;
+
 	ret = qpnp_vib_parse_dt(&pdev->dev, chip);
 	if (ret < 0) {
 		pr_err("couldn't parse device tree, ret=%d\n", ret);
 		return ret;
 	}
 
+	chip->input_dev->name = "qpnp_vibrator_ldo";
+	chip->input_dev->id.version = 1;
+	chip->input_dev->close = NULL; // TODO
+	input_set_drvdata(chip->input_dev, chip);
+	input_set_capability(chip->input_dev, EV_FF, FF_RUMBLE);
+
+	ret = input_ff_create_memless(chip->input_dev, NULL,
+				      qpnp_vib_play_effect);
+	if (ret) {
+		dev_err(&pdev->dev,
+			"couldn't register vibrator as FF device\n");
+		return ret;
+	}
+
+	ret = input_register_device(chip->input_dev);
+	if (ret) {
+		dev_err(&pdev->dev, "couldn't register input device\n");
+		return ret;
+	}
 	chip->base = (uint16_t)base;
 	chip->vib_play_ms = QPNP_VIB_PLAY_MS;
 	mutex_init(&chip->lock);
