@@ -221,3 +221,19 @@
 &usb3_dwc3 {
 	dr_mode = "peripheral";
 };
+
+&spmi_bus {
+	pmi632_3@3 {
+		compatible ="qcom,spmi-pmic";
+		reg = <0x3 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		pmi632_vib: qcom,vibrator@5700 {
+			compatible = "qcom,qpnp-vibrator-ldo";
+			reg = <0x5700 0x100>;
+			qcom,vib-ldo-volt-uv = <3000000>;
+			qcom,disable-overdrive;
+		};
+	};
+};
