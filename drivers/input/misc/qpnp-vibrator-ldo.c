@@ -10,8 +10,7 @@
  * GNU General Public License for more details.
  */
 
-#define pr_fmt(fmt) "%s: " fmt, __func__
-
+#include <linux/atomic.h>
 #include <linux/errno.h>
 #include <linux/hrtimer.h>
 #include <linux/init.h>
@@ -37,6 +36,11 @@
 #define QPNP_VIB_LDO_VMAX_UV 3544000
 #define QPNP_VIB_LDO_VOLT_STEP_UV 8000
 
+/* We rely on having 255 levels of strength */
+static_assert((QPNP_VIB_LDO_VMAX_UV - QPNP_VIB_LDO_VMIN_UV) /
+		      QPNP_VIB_LDO_VOLT_STEP_UV ==
+	      255);
+
 struct vib_ldo_chip {
 	struct regmap *regmap;
 	struct input_dev *input_dev;
@@ -46,8 +50,12 @@ struct vib_ldo_chip {
 	u16 base;
 	int vmax_uV;
 	int ldo_uV;
-	int state;
 	bool vib_enabled;
+
+	/* Atomic because shared between input_ff_create_memless callback
+	 * (called from timer softirq) and workqueue
+	 */
+	atomic_t strength;
 };
 
 static inline int qpnp_vib_ldo_poll_status(struct vib_ldo_chip *chip)
@@ -132,41 +140,19 @@ static inline int qpnp_vib_ldo_enable(struct vib_ldo_chip *chip, bool enable)
 	return ret;
 }
 
-static int qpnp_vibrator_play_on(struct vib_ldo_chip *chip)
-{
-	int volt_uV;
-	int ret;
-
-	volt_uV = chip->vmax_uV;
-
-	ret = qpnp_vib_ldo_set_voltage(chip, volt_uV);
-	if (ret < 0) {
-		pr_err("set voltage = %duV failed, ret=%d\n", volt_uV, ret);
-		return ret;
-	}
-	pr_debug("voltage set to %d uV\n", volt_uV);
-
-	ret = qpnp_vib_ldo_enable(chip, true);
-	if (ret < 0) {
-		pr_err("vibration enable failed, ret=%d\n", ret);
-		return ret;
-	}
-
-	return ret;
-}
-
 static void qpnp_vib_work(struct work_struct *work)
 {
 	struct vib_ldo_chip *chip =
 		container_of(work, struct vib_ldo_chip, vib_work);
-	int ret = 0;
+	u8 strength = atomic_read(&chip->strength);
 
-	if (chip->state) {
-		if (!chip->vib_enabled)
-			ret = qpnp_vibrator_play_on(chip);
-	} else {
-		qpnp_vib_ldo_enable(chip, false);
+	if (strength) {
+		int uv = QPNP_VIB_LDO_VMIN_UV +
+			 strength * QPNP_VIB_LDO_VOLT_STEP_UV;
+		qpnp_vib_ldo_set_voltage(chip, uv);
 	}
+
+	qpnp_vib_ldo_enable(chip, !!strength);
 }
 
 static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
@@ -188,15 +174,14 @@ static int qpnp_vib_play_effect(struct input_dev *dev, void *data,
 				struct ff_effect *effect)
 {
 	struct vib_ldo_chip *vib = input_get_drvdata(dev);
-	u16 speed;
+	u8 strength;
 
-	speed = effect->u.rumble.strong_magnitude >> 8;
-	if (!speed)
-		speed = effect->u.rumble.weak_magnitude >> 9;
+	/* Map magnitude in the [0, 255] range */
+	strength = effect->u.rumble.strong_magnitude >> 8;
+	if (!strength)
+		strength = effect->u.rumble.weak_magnitude >> 12;
 
-	mutex_lock(&vib->lock);
-	vib->state = !!speed;
-	mutex_unlock(&vib->lock);
+	atomic_set(&vib->strength, strength);
 	schedule_work(&vib->vib_work);
 
 	return 0;
