@@ -44,7 +44,6 @@ static_assert((QPNP_VIB_LDO_VMAX_UV - QPNP_VIB_LDO_VMIN_UV) /
 struct vib_ldo_chip {
 	struct regmap *regmap;
 	struct input_dev *input_dev;
-	struct mutex lock;
 	struct work_struct vib_work;
 
 	u16 base;
@@ -191,10 +190,8 @@ static int qpnp_vibrator_ldo_suspend(struct device *dev)
 {
 	struct vib_ldo_chip *chip = dev_get_drvdata(dev);
 
-	mutex_lock(&chip->lock);
 	cancel_work_sync(&chip->vib_work);
 	qpnp_vib_ldo_enable(chip, false);
-	mutex_unlock(&chip->lock);
 
 	return 0;
 }
@@ -254,7 +251,6 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 		return ret;
 	}
 	chip->base = (uint16_t)base;
-	mutex_init(&chip->lock);
 	INIT_WORK(&chip->vib_work, qpnp_vib_work);
 
 	dev_set_drvdata(&pdev->dev, chip);
@@ -267,7 +263,6 @@ static int qpnp_vibrator_ldo_remove(struct platform_device *pdev)
 	struct vib_ldo_chip *chip = dev_get_drvdata(&pdev->dev);
 
 	cancel_work_sync(&chip->vib_work);
-	mutex_destroy(&chip->lock);
 	dev_set_drvdata(&pdev->dev, NULL);
 
 	return 0;
