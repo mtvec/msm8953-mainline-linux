@@ -17,7 +17,6 @@
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/kernel.h>
-#include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of_device.h>
@@ -48,7 +47,6 @@
 #define QPNP_VIB_OVERDRIVE_PLAY_MS 30
 
 struct vib_ldo_chip {
-	struct led_classdev cdev;
 	struct regmap *regmap;
 	struct input_dev *input_dev;
 	struct mutex lock;
@@ -284,12 +282,6 @@ static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 	return ret;
 }
 
-/* Dummy functions for brightness */
-static enum led_brightness qpnp_vib_brightness_get(struct led_classdev *cdev)
-{
-	return 0;
-}
-
 static int qpnp_vib_play_effect(struct input_dev *dev, void *data,
 				struct ff_effect *effect)
 {
@@ -307,11 +299,6 @@ static int qpnp_vib_play_effect(struct input_dev *dev, void *data,
 	schedule_work(&vib->vib_work);
 
 	return 0;
-}
-
-static void qpnp_vib_brightness_set(struct led_classdev *cdev,
-				    enum led_brightness level)
-{
 }
 
 static int qpnp_vibrator_ldo_suspend(struct device *dev)
@@ -397,22 +384,7 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 	chip->overdrive_timer.function = vib_overdrive_timer;
 	dev_set_drvdata(&pdev->dev, chip);
 
-	chip->cdev.name = "vibrator";
-	chip->cdev.brightness_get = qpnp_vib_brightness_get;
-	chip->cdev.brightness_set = qpnp_vib_brightness_set;
-	chip->cdev.max_brightness = 100;
-	ret = devm_led_classdev_register(&pdev->dev, &chip->cdev);
-	if (ret < 0) {
-		pr_err("Error in registering led class device, ret=%d\n", ret);
-		goto fail;
-	}
-
 	return 0;
-
-fail:
-	mutex_destroy(&chip->lock);
-	dev_set_drvdata(&pdev->dev, NULL);
-	return ret;
 }
 
 static int qpnp_vibrator_ldo_remove(struct platform_device *pdev)
