@@ -37,26 +37,16 @@
 #define QPNP_VIB_LDO_VMAX_UV 3544000
 #define QPNP_VIB_LDO_VOLT_STEP_UV 8000
 
-/*
- * Define vibration periods: default(5sec), min(50ms), max(15sec) and
- * overdrive(30ms).
- */
-#define QPNP_VIB_MIN_PLAY_MS 50
-#define QPNP_VIB_PLAY_MS 5000
-#define QPNP_VIB_MAX_PLAY_MS 15000
-
 struct vib_ldo_chip {
 	struct regmap *regmap;
 	struct input_dev *input_dev;
 	struct mutex lock;
-	struct hrtimer stop_timer;
 	struct work_struct vib_work;
 
 	u16 base;
 	int vmax_uV;
 	int ldo_uV;
 	int state;
-	u64 vib_play_ms;
 	bool vib_enabled;
 };
 
@@ -174,24 +164,9 @@ static void qpnp_vib_work(struct work_struct *work)
 	if (chip->state) {
 		if (!chip->vib_enabled)
 			ret = qpnp_vibrator_play_on(chip);
-
-		if (ret == 0)
-			hrtimer_start(&chip->stop_timer,
-				      ms_to_ktime(chip->vib_play_ms),
-				      HRTIMER_MODE_REL);
 	} else {
 		qpnp_vib_ldo_enable(chip, false);
 	}
-}
-
-static enum hrtimer_restart vib_stop_timer(struct hrtimer *timer)
-{
-	struct vib_ldo_chip *chip =
-		container_of(timer, struct vib_ldo_chip, stop_timer);
-
-	chip->state = 0;
-	schedule_work(&chip->vib_work);
-	return HRTIMER_NORESTART;
 }
 
 static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
@@ -220,7 +195,6 @@ static int qpnp_vib_play_effect(struct input_dev *dev, void *data,
 		speed = effect->u.rumble.weak_magnitude >> 9;
 
 	mutex_lock(&vib->lock);
-	hrtimer_cancel(&vib->stop_timer);
 	vib->state = !!speed;
 	mutex_unlock(&vib->lock);
 	schedule_work(&vib->vib_work);
@@ -233,7 +207,6 @@ static int qpnp_vibrator_ldo_suspend(struct device *dev)
 	struct vib_ldo_chip *chip = dev_get_drvdata(dev);
 
 	mutex_lock(&chip->lock);
-	hrtimer_cancel(&chip->stop_timer);
 	cancel_work_sync(&chip->vib_work);
 	qpnp_vib_ldo_enable(chip, false);
 	mutex_unlock(&chip->lock);
@@ -296,12 +269,9 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 		return ret;
 	}
 	chip->base = (uint16_t)base;
-	chip->vib_play_ms = QPNP_VIB_PLAY_MS;
 	mutex_init(&chip->lock);
 	INIT_WORK(&chip->vib_work, qpnp_vib_work);
 
-	hrtimer_init(&chip->stop_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	chip->stop_timer.function = vib_stop_timer;
 	dev_set_drvdata(&pdev->dev, chip);
 
 	return 0;
@@ -311,7 +281,6 @@ static int qpnp_vibrator_ldo_remove(struct platform_device *pdev)
 {
 	struct vib_ldo_chip *chip = dev_get_drvdata(&pdev->dev);
 
-	hrtimer_cancel(&chip->stop_timer);
 	cancel_work_sync(&chip->vib_work);
 	mutex_destroy(&chip->lock);
 	dev_set_drvdata(&pdev->dev, NULL);
