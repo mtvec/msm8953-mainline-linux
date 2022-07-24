@@ -44,25 +44,20 @@
 #define QPNP_VIB_MIN_PLAY_MS 50
 #define QPNP_VIB_PLAY_MS 5000
 #define QPNP_VIB_MAX_PLAY_MS 15000
-#define QPNP_VIB_OVERDRIVE_PLAY_MS 30
 
 struct vib_ldo_chip {
 	struct regmap *regmap;
 	struct input_dev *input_dev;
 	struct mutex lock;
 	struct hrtimer stop_timer;
-	struct hrtimer overdrive_timer;
 	struct work_struct vib_work;
-	struct work_struct overdrive_work;
 
 	u16 base;
 	int vmax_uV;
-	int overdrive_volt_uV;
 	int ldo_uV;
 	int state;
 	u64 vib_play_ms;
 	bool vib_enabled;
-	bool disable_overdrive;
 };
 
 static inline int qpnp_vib_ldo_poll_status(struct vib_ldo_chip *chip)
@@ -153,10 +148,6 @@ static int qpnp_vibrator_play_on(struct vib_ldo_chip *chip)
 	int ret;
 
 	volt_uV = chip->vmax_uV;
-	if (!chip->disable_overdrive)
-		volt_uV = chip->overdrive_volt_uV ?
-				  chip->overdrive_volt_uV :
-				  min(chip->vmax_uV * 2, QPNP_VIB_LDO_VMAX_UV);
 
 	ret = qpnp_vib_ldo_set_voltage(chip, volt_uV);
 	if (ret < 0) {
@@ -170,11 +161,6 @@ static int qpnp_vibrator_play_on(struct vib_ldo_chip *chip)
 		pr_err("vibration enable failed, ret=%d\n", ret);
 		return ret;
 	}
-
-	if (!chip->disable_overdrive)
-		hrtimer_start(&chip->overdrive_timer,
-			      ms_to_ktime(QPNP_VIB_OVERDRIVE_PLAY_MS),
-			      HRTIMER_MODE_REL);
 
 	return ret;
 }
@@ -194,10 +180,6 @@ static void qpnp_vib_work(struct work_struct *work)
 				      ms_to_ktime(chip->vib_play_ms),
 				      HRTIMER_MODE_REL);
 	} else {
-		if (!chip->disable_overdrive) {
-			hrtimer_cancel(&chip->overdrive_timer);
-			cancel_work_sync(&chip->overdrive_work);
-		}
 		qpnp_vib_ldo_enable(chip, false);
 	}
 }
@@ -212,40 +194,6 @@ static enum hrtimer_restart vib_stop_timer(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-static void qpnp_vib_overdrive_work(struct work_struct *work)
-{
-	struct vib_ldo_chip *chip =
-		container_of(work, struct vib_ldo_chip, overdrive_work);
-	int ret;
-
-	mutex_lock(&chip->lock);
-
-	/* LDO voltage update not required if Vibration disabled */
-	if (!chip->vib_enabled)
-		goto unlock;
-
-	ret = qpnp_vib_ldo_set_voltage(chip, chip->vmax_uV);
-	if (ret < 0) {
-		pr_err("set vibration voltage = %duV failed, ret=%d\n",
-		       chip->vmax_uV, ret);
-		qpnp_vib_ldo_enable(chip, false);
-		goto unlock;
-	}
-	pr_debug("voltage set to %d\n", chip->vmax_uV);
-
-unlock:
-	mutex_unlock(&chip->lock);
-}
-
-static enum hrtimer_restart vib_overdrive_timer(struct hrtimer *timer)
-{
-	struct vib_ldo_chip *chip =
-		container_of(timer, struct vib_ldo_chip, overdrive_timer);
-	schedule_work(&chip->overdrive_work);
-	pr_debug("overdrive timer expired\n");
-	return HRTIMER_NORESTART;
-}
-
 static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 {
 	int ret;
@@ -256,27 +204,6 @@ static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 		pr_err("qcom,vib-ldo-volt-uv property read failed, ret=%d\n",
 		       ret);
 		return ret;
-	}
-
-	chip->disable_overdrive =
-		of_property_read_bool(dev->of_node, "qcom,disable-overdrive");
-
-	if (of_find_property(dev->of_node, "qcom,vib-overdrive-volt-uv",
-			     NULL)) {
-		ret = of_property_read_u32(dev->of_node,
-					   "qcom,vib-overdrive-volt-uv",
-					   &chip->overdrive_volt_uV);
-		if (ret < 0) {
-			pr_err("qcom,vib-overdrive-volt-uv property read failed, ret=%d\n",
-			       ret);
-			return ret;
-		}
-
-		/* check against vibrator ldo min/max voltage limits */
-		chip->overdrive_volt_uV =
-			min(chip->overdrive_volt_uV, QPNP_VIB_LDO_VMAX_UV);
-		chip->overdrive_volt_uV =
-			max(chip->overdrive_volt_uV, QPNP_VIB_LDO_VMIN_UV);
 	}
 
 	return ret;
@@ -306,10 +233,6 @@ static int qpnp_vibrator_ldo_suspend(struct device *dev)
 	struct vib_ldo_chip *chip = dev_get_drvdata(dev);
 
 	mutex_lock(&chip->lock);
-	if (!chip->disable_overdrive) {
-		hrtimer_cancel(&chip->overdrive_timer);
-		cancel_work_sync(&chip->overdrive_work);
-	}
 	hrtimer_cancel(&chip->stop_timer);
 	cancel_work_sync(&chip->vib_work);
 	qpnp_vib_ldo_enable(chip, false);
@@ -376,12 +299,9 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 	chip->vib_play_ms = QPNP_VIB_PLAY_MS;
 	mutex_init(&chip->lock);
 	INIT_WORK(&chip->vib_work, qpnp_vib_work);
-	INIT_WORK(&chip->overdrive_work, qpnp_vib_overdrive_work);
 
 	hrtimer_init(&chip->stop_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	chip->stop_timer.function = vib_stop_timer;
-	hrtimer_init(&chip->overdrive_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	chip->overdrive_timer.function = vib_overdrive_timer;
 	dev_set_drvdata(&pdev->dev, chip);
 
 	return 0;
@@ -391,10 +311,6 @@ static int qpnp_vibrator_ldo_remove(struct platform_device *pdev)
 {
 	struct vib_ldo_chip *chip = dev_get_drvdata(&pdev->dev);
 
-	if (!chip->disable_overdrive) {
-		hrtimer_cancel(&chip->overdrive_timer);
-		cancel_work_sync(&chip->overdrive_work);
-	}
 	hrtimer_cancel(&chip->stop_timer);
 	cancel_work_sync(&chip->vib_work);
 	mutex_destroy(&chip->lock);
