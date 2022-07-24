@@ -35,11 +35,7 @@
 #define QPNP_VIB_LDO_VMIN_UV 1504000
 #define QPNP_VIB_LDO_VMAX_UV 3544000
 #define QPNP_VIB_LDO_VOLT_STEP_UV 8000
-
-/* We rely on having 255 levels of strength */
-static_assert((QPNP_VIB_LDO_VMAX_UV - QPNP_VIB_LDO_VMIN_UV) /
-		      QPNP_VIB_LDO_VOLT_STEP_UV ==
-	      255);
+#define QPNP_VIB_LDO_STRENGTH_LEVELS 255
 
 struct vib_ldo_chip {
 	struct regmap *regmap;
@@ -146,8 +142,9 @@ static void qpnp_vib_work(struct work_struct *work)
 	u8 strength = atomic_read(&chip->strength);
 
 	if (strength) {
-		int uv = QPNP_VIB_LDO_VMIN_UV +
-			 strength * QPNP_VIB_LDO_VOLT_STEP_UV;
+		int step = (chip->vmax_uV - QPNP_VIB_LDO_VMIN_UV) /
+			   QPNP_VIB_LDO_STRENGTH_LEVELS;
+		int uv = QPNP_VIB_LDO_VMIN_UV + strength * step;
 		qpnp_vib_ldo_set_voltage(chip, uv);
 	}
 
