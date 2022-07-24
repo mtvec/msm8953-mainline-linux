@@ -248,148 +248,6 @@ static enum hrtimer_restart vib_overdrive_timer(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-static ssize_t qpnp_vib_show_state(struct device *dev,
-				   struct device_attribute *attr, char *buf)
-{
-	struct led_classdev *cdev = dev_get_drvdata(dev);
-	struct vib_ldo_chip *chip =
-		container_of(cdev, struct vib_ldo_chip, cdev);
-
-	return snprintf(buf, PAGE_SIZE, "%d\n", chip->vib_enabled);
-}
-
-static ssize_t qpnp_vib_store_state(struct device *dev,
-				    struct device_attribute *attr,
-				    const char *buf, size_t count)
-{
-	/* At present, nothing to do with setting state */
-	return count;
-}
-
-static ssize_t qpnp_vib_show_duration(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	struct led_classdev *cdev = dev_get_drvdata(dev);
-	struct vib_ldo_chip *chip =
-		container_of(cdev, struct vib_ldo_chip, cdev);
-	ktime_t time_rem;
-	s64 time_ms = 0;
-
-	if (hrtimer_active(&chip->stop_timer)) {
-		time_rem = hrtimer_get_remaining(&chip->stop_timer);
-		time_ms = ktime_to_ms(time_rem);
-	}
-
-	return snprintf(buf, PAGE_SIZE, "%lld\n", time_ms);
-}
-
-static ssize_t qpnp_vib_store_duration(struct device *dev,
-				       struct device_attribute *attr,
-				       const char *buf, size_t count)
-{
-	struct led_classdev *cdev = dev_get_drvdata(dev);
-	struct vib_ldo_chip *chip =
-		container_of(cdev, struct vib_ldo_chip, cdev);
-	u32 val;
-	int ret;
-
-	ret = kstrtouint(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-
-	/* setting 0 on duration is NOP for now */
-	if (val <= 0)
-		return count;
-
-	if (val < QPNP_VIB_MIN_PLAY_MS)
-		val = QPNP_VIB_MIN_PLAY_MS;
-
-	if (val > QPNP_VIB_MAX_PLAY_MS)
-		val = QPNP_VIB_MAX_PLAY_MS;
-
-	mutex_lock(&chip->lock);
-	chip->vib_play_ms = val;
-	mutex_unlock(&chip->lock);
-
-	return count;
-}
-
-static ssize_t qpnp_vib_show_activate(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	/* For now nothing to show */
-	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
-}
-
-static ssize_t qpnp_vib_store_activate(struct device *dev,
-				       struct device_attribute *attr,
-				       const char *buf, size_t count)
-{
-	struct led_classdev *cdev = dev_get_drvdata(dev);
-	struct vib_ldo_chip *chip =
-		container_of(cdev, struct vib_ldo_chip, cdev);
-	u32 val;
-	int ret;
-
-	ret = kstrtouint(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-
-	if (val != 0 && val != 1)
-		return count;
-
-	mutex_lock(&chip->lock);
-	hrtimer_cancel(&chip->stop_timer);
-	chip->state = val;
-	pr_debug("state = %d, time = %llums\n", chip->state, chip->vib_play_ms);
-	mutex_unlock(&chip->lock);
-	schedule_work(&chip->vib_work);
-
-	return count;
-}
-
-static ssize_t qpnp_vib_show_vmax(struct device *dev,
-				  struct device_attribute *attr, char *buf)
-{
-	struct led_classdev *cdev = dev_get_drvdata(dev);
-	struct vib_ldo_chip *chip =
-		container_of(cdev, struct vib_ldo_chip, cdev);
-
-	return snprintf(buf, PAGE_SIZE, "%d\n", chip->vmax_uV / 1000);
-}
-
-static ssize_t qpnp_vib_store_vmax(struct device *dev,
-				   struct device_attribute *attr,
-				   const char *buf, size_t count)
-{
-	struct led_classdev *cdev = dev_get_drvdata(dev);
-	struct vib_ldo_chip *chip =
-		container_of(cdev, struct vib_ldo_chip, cdev);
-	int data, ret;
-
-	ret = kstrtoint(buf, 10, &data);
-	if (ret < 0)
-		return ret;
-
-	data = data * 1000; /* Convert to microvolts */
-
-	/* check against vibrator ldo min/max voltage limits */
-	data = min(data, QPNP_VIB_LDO_VMAX_UV);
-	data = max(data, QPNP_VIB_LDO_VMIN_UV);
-
-	mutex_lock(&chip->lock);
-	chip->vmax_uV = data;
-	mutex_unlock(&chip->lock);
-	return ret;
-}
-
-static struct device_attribute qpnp_vib_attrs[] = {
-	__ATTR(state, 0664, qpnp_vib_show_state, qpnp_vib_store_state),
-	__ATTR(duration, 0664, qpnp_vib_show_duration, qpnp_vib_store_duration),
-	__ATTR(activate, 0664, qpnp_vib_show_activate, qpnp_vib_store_activate),
-	__ATTR(vmax_mv, 0664, qpnp_vib_show_vmax, qpnp_vib_store_vmax),
-};
-
 static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 {
 	int ret;
@@ -479,7 +337,7 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 {
 	struct device_node *of_node = pdev->dev.of_node;
 	struct vib_ldo_chip *chip;
-	int i, ret;
+	int ret;
 	u32 base;
 
 	ret = of_property_read_u32(of_node, "reg", &base);
@@ -549,25 +407,8 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 		goto fail;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(qpnp_vib_attrs); i++) {
-		ret = sysfs_create_file(&chip->cdev.dev->kobj,
-					&qpnp_vib_attrs[i].attr);
-		if (ret < 0) {
-			dev_err(&pdev->dev,
-				"Error in creating sysfs file, ret=%d\n", ret);
-			goto sysfs_fail;
-		}
-	}
-
-	pr_info("Vibrator LDO successfully registered: uV = %d, overdrive = %s\n",
-		chip->vmax_uV,
-		chip->disable_overdrive ? "disabled" : "enabled");
 	return 0;
 
-sysfs_fail:
-	for (--i; i >= 0; i--)
-		sysfs_remove_file(&chip->cdev.dev->kobj,
-				  &qpnp_vib_attrs[i].attr);
 fail:
 	mutex_destroy(&chip->lock);
 	dev_set_drvdata(&pdev->dev, NULL);
