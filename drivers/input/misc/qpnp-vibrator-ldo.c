@@ -39,6 +39,7 @@
 
 struct vib_ldo_chip {
 	struct regmap *regmap;
+	struct platform_device *pdev;
 	struct input_dev *input_dev;
 	struct work_struct vib_work;
 
@@ -63,8 +64,9 @@ static inline int qpnp_vib_ldo_poll_status(struct vib_ldo_chip *chip)
 				       val, val & QPNP_VIB_LDO_VREG_READY, 100,
 				       1000);
 	if (ret < 0) {
-		pr_err("Vibrator LDO vreg_ready timeout, status=0x%02x, ret=%d\n",
-		       val, ret);
+		dev_err(&chip->pdev->dev,
+			"Vibrator LDO vreg_ready timeout, status=0x%02x, ret=%d\n",
+			val, ret);
 
 		/* Keep VIB_LDO disabled */
 		regmap_update_bits(chip->regmap,
@@ -90,14 +92,15 @@ static int qpnp_vib_ldo_set_voltage(struct vib_ldo_chip *chip, int new_uV)
 	ret = regmap_bulk_write(chip->regmap,
 				chip->base + QPNP_VIB_LDO_REG_VSET_LB, reg, 2);
 	if (ret < 0) {
-		pr_err("regmap write failed, ret=%d\n", ret);
+		dev_err(&chip->pdev->dev, "regmap write failed, ret=%d\n", ret);
 		return ret;
 	}
 
 	if (chip->vib_enabled) {
 		ret = qpnp_vib_ldo_poll_status(chip);
 		if (ret < 0) {
-			pr_err("Vibrator LDO status polling timedout\n");
+			dev_err(&chip->pdev->dev,
+				"Vibrator LDO status polling timedout\n");
 			return ret;
 		}
 	}
@@ -117,15 +120,17 @@ static inline int qpnp_vib_ldo_enable(struct vib_ldo_chip *chip, bool enable)
 				 chip->base + QPNP_VIB_LDO_REG_EN_CTL,
 				 QPNP_VIB_LDO_EN, enable ? QPNP_VIB_LDO_EN : 0);
 	if (ret < 0) {
-		pr_err("Program Vibrator LDO %s is failed, ret=%d\n",
-		       enable ? "enable" : "disable", ret);
+		dev_err(&chip->pdev->dev,
+			"Program Vibrator LDO %s is failed, ret=%d\n",
+			enable ? "enable" : "disable", ret);
 		return ret;
 	}
 
 	if (enable) {
 		ret = qpnp_vib_ldo_poll_status(chip);
 		if (ret < 0) {
-			pr_err("Vibrator LDO status polling timedout\n");
+			dev_err(&chip->pdev->dev,
+				"Vibrator LDO status polling timedout\n");
 			return ret;
 		}
 	}
@@ -153,23 +158,21 @@ static void qpnp_vib_work(struct work_struct *work)
 
 static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 {
-	int ret;
+	int error;
 
-	ret = of_property_read_u32(dev->of_node, "reg", &chip->base);
-	if (ret < 0) {
-		pr_err("reg property reading failed, ret=%d\n", ret);
-		return ret;
+	error = of_property_read_u32(dev->of_node, "reg", &chip->base);
+	if (error) {
+		return dev_err_probe(dev, error,
+				     "Failed to read reg property from DT\n");
 	}
 
-	ret = of_property_read_u32(dev->of_node, "qcom,vib-ldo-volt-uv",
-				   &chip->vmax_uV);
-	if (ret < 0) {
-		pr_err("qcom,vib-ldo-volt-uv property read failed, ret=%d\n",
-		       ret);
-		return ret;
+	error = of_property_read_u32(dev->of_node, "max-uv", &chip->vmax_uV);
+	if (error) {
+		return dev_err_probe(
+			dev, error, "Failed to read max-uv property from DT\n");
 	}
 
-	return ret;
+	return error;
 }
 
 static int qpnp_vib_play_effect(struct input_dev *dev, void *data,
@@ -205,26 +208,29 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 {
 	struct vib_ldo_chip *chip;
 	int ret;
+	struct device *dev = &pdev->dev;
 
-	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc(dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
-	chip->regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	chip->pdev = pdev;
+
+	chip->regmap = dev_get_regmap(dev->parent, NULL);
 	if (!chip->regmap) {
-		pr_err("couldn't get parent's regmap\n");
-		return -EINVAL;
+		dev_err(dev, "Failed to get regmap\n");
+		return -ENODEV;
 	}
 
-	chip->input_dev = devm_input_allocate_device(&pdev->dev);
-	if (!chip->input_dev)
+	chip->input_dev = devm_input_allocate_device(dev);
+	if (!chip->input_dev) {
+		dev_err(dev, "Failed to allocate input device\n");
 		return -ENOMEM;
-
-	ret = qpnp_vib_parse_dt(&pdev->dev, chip);
-	if (ret < 0) {
-		pr_err("couldn't parse device tree, ret=%d\n", ret);
-		return ret;
 	}
+
+	ret = qpnp_vib_parse_dt(dev, chip);
+	if (ret < 0)
+		return ret;
 
 	chip->input_dev->name = "qpnp_vibrator_ldo";
 	chip->input_dev->id.version = 1;
@@ -235,18 +241,17 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 	ret = input_ff_create_memless(chip->input_dev, NULL,
 				      qpnp_vib_play_effect);
 	if (ret) {
-		dev_err(&pdev->dev,
-			"couldn't register vibrator as FF device\n");
-		return ret;
+		return dev_err_probe(
+			dev, ret, "Failed to register force-feedback device\n");
 	}
 
 	ret = input_register_device(chip->input_dev);
 	if (ret) {
-		dev_err(&pdev->dev, "couldn't register input device\n");
-		return ret;
+		return dev_err_probe(&pdev->dev, ret,
+				     "Failed to register input device\n");
 	}
-	INIT_WORK(&chip->vib_work, qpnp_vib_work);
 
+	INIT_WORK(&chip->vib_work, qpnp_vib_work);
 	dev_set_drvdata(&pdev->dev, chip);
 
 	return 0;
