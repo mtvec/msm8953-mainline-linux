@@ -42,7 +42,7 @@ struct vib_ldo_chip {
 	struct input_dev *input_dev;
 	struct work_struct vib_work;
 
-	u16 base;
+	u32 base;
 	int vmax_uV;
 	int ldo_uV;
 	bool vib_enabled;
@@ -155,6 +155,12 @@ static int qpnp_vib_parse_dt(struct device *dev, struct vib_ldo_chip *chip)
 {
 	int ret;
 
+	ret = of_property_read_u32(dev->of_node, "reg", &chip->base);
+	if (ret < 0) {
+		pr_err("reg property reading failed, ret=%d\n", ret);
+		return ret;
+	}
+
 	ret = of_property_read_u32(dev->of_node, "qcom,vib-ldo-volt-uv",
 				   &chip->vmax_uV);
 	if (ret < 0) {
@@ -197,16 +203,8 @@ static SIMPLE_DEV_PM_OPS(qpnp_vibrator_ldo_pm_ops, qpnp_vibrator_ldo_suspend,
 
 static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 {
-	struct device_node *of_node = pdev->dev.of_node;
 	struct vib_ldo_chip *chip;
 	int ret;
-	u32 base;
-
-	ret = of_property_read_u32(of_node, "reg", &base);
-	if (ret < 0) {
-		pr_err("reg property reading failed, ret=%d\n", ret);
-		return ret;
-	}
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
@@ -247,7 +245,6 @@ static int qpnp_vibrator_ldo_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "couldn't register input device\n");
 		return ret;
 	}
-	chip->base = (uint16_t)base;
 	INIT_WORK(&chip->vib_work, qpnp_vib_work);
 
 	dev_set_drvdata(&pdev->dev, chip);
