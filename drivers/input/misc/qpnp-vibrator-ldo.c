@@ -23,9 +23,6 @@
 #include <linux/workqueue.h>
 
 /* Vibrator-LDO register definitions */
-#define QPNP_VIB_LDO_REG_STATUS1 0x08
-#define QPNP_VIB_LDO_VREG_READY BIT(7)
-
 #define QPNP_VIB_LDO_REG_VSET_LB 0x40
 
 #define QPNP_VIB_LDO_REG_EN_CTL 0x46
@@ -54,29 +51,6 @@ struct vib_ldo_chip {
 	atomic_t strength;
 };
 
-static inline int qpnp_vib_ldo_poll_status(struct vib_ldo_chip *chip)
-{
-	unsigned int val;
-	int ret;
-
-	ret = regmap_read_poll_timeout(chip->regmap,
-				       chip->base + QPNP_VIB_LDO_REG_STATUS1,
-				       val, val & QPNP_VIB_LDO_VREG_READY, 100,
-				       1000);
-	if (ret < 0) {
-		dev_err(&chip->pdev->dev,
-			"Vibrator LDO vreg_ready timeout, status=0x%02x, ret=%d\n",
-			val, ret);
-
-		/* Keep VIB_LDO disabled */
-		regmap_update_bits(chip->regmap,
-				   chip->base + QPNP_VIB_LDO_REG_EN_CTL,
-				   QPNP_VIB_LDO_EN, 0);
-	}
-
-	return ret;
-}
-
 static int qpnp_vib_ldo_set_voltage(struct vib_ldo_chip *chip, int new_uV)
 {
 	u32 vlevel;
@@ -94,15 +68,6 @@ static int qpnp_vib_ldo_set_voltage(struct vib_ldo_chip *chip, int new_uV)
 	if (ret < 0) {
 		dev_err(&chip->pdev->dev, "regmap write failed, ret=%d\n", ret);
 		return ret;
-	}
-
-	if (chip->vib_enabled) {
-		ret = qpnp_vib_ldo_poll_status(chip);
-		if (ret < 0) {
-			dev_err(&chip->pdev->dev,
-				"Vibrator LDO status polling timedout\n");
-			return ret;
-		}
 	}
 
 	chip->ldo_uV = new_uV;
@@ -124,15 +89,6 @@ static inline int qpnp_vib_ldo_enable(struct vib_ldo_chip *chip, bool enable)
 			"Program Vibrator LDO %s is failed, ret=%d\n",
 			enable ? "enable" : "disable", ret);
 		return ret;
-	}
-
-	if (enable) {
-		ret = qpnp_vib_ldo_poll_status(chip);
-		if (ret < 0) {
-			dev_err(&chip->pdev->dev,
-				"Vibrator LDO status polling timedout\n");
-			return ret;
-		}
 	}
 
 	chip->vib_enabled = enable;
